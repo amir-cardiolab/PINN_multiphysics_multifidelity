@@ -1,0 +1,446 @@
+import torch
+import numpy as np
+from torch.autograd import Variable
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import pdb
+import csv
+from torch.utils.data import DataLoader, TensorDataset,RandomSampler
+from math import exp, sqrt,pi
+import time
+# solve 2D convection in a rotating homogeneous porous medium
+
+def geo_train(device,x_in,y_in,xb_in,yb_in,xb_out,yb_out,xb_up,yb_up,xb_down,yb_down,batchsize,learning_rate,epochs,path,Flag_batch,Flag_BC_exact,Lambda_BC,nPt ):
+    if (Flag_batch):
+     x = torch.Tensor(x_in).to(device)
+     y = torch.Tensor(y_in).to(device)
+     xb_in = torch.Tensor(xb_in).to(device)
+     yb_in = torch.Tensor(yb_in).to(device)
+     xb_out = torch.Tensor(xb_out).to(device)
+     yb_out = torch.Tensor(yb_out).to(device)
+     xb_up = torch.Tensor(xb_up).to(device)
+     yb_up = torch.Tensor(yb_up).to(device)
+     xb_down = torch.Tensor(xb_down).to(device)
+     yb_down = torch.Tensor(yb_down).to(device)
+     
+     
+     if(1): #Cuda slower in double? 
+         x = x.type(torch.cuda.FloatTensor)
+         y = y.type(torch.cuda.FloatTensor)
+         xb_in = xb_in.type(torch.cuda.FloatTensor)
+         yb_in = yb_in.type(torch.cuda.FloatTensor)
+         xb_out = xb_out.type(torch.cuda.FloatTensor)
+         yb_out = yb_out.type(torch.cuda.FloatTensor)
+         xb_up = xb_up.type(torch.cuda.FloatTensor)
+         yb_up = yb_up.type(torch.cuda.FloatTensor)
+         xb_down = xb_down.type(torch.cuda.FloatTensor)
+         yb_down = yb_down.type(torch.cuda.FloatTensor)
+        
+     dataset = TensorDataset(x,y)
+    
+     dataloader = DataLoader(dataset, batch_size=batchsize,shuffle=True,num_workers = 0,drop_last = False )
+    else:
+     x = torch.Tensor(x_in).to(device)
+     y = torch.Tensor(y_in).to(device) 
+     
+    
+    h_n = 70    # no of neurons
+    input_n = 2 # this is what our answer is a function of.
+    
+    class Swish(nn.Module): #Activation Function
+        def __init__(self, inplace=True):
+            super(Swish, self).__init__()
+            self.inplace = inplace
+
+        def forward(self, x):
+            if self.inplace:
+                x.mul_(torch.sigmoid(x))
+                return x
+            else:
+                return x * torch.sigmoid(x)
+    
+  
+
+    class Net2_T(nn.Module):
+
+        #The __init__ function stack the layers of the 
+        #network Sequentially 
+        def __init__(self):
+            super(Net2_T, self).__init__()
+            self.main = nn.Sequential(
+                nn.Linear(input_n,h_n),
+                
+                Swish(),
+                nn.Linear(h_n,h_n),
+                
+                Swish(),
+                nn.Linear(h_n,h_n),
+                
+                Swish(),
+                nn.Linear(h_n,h_n),
+               
+                Swish(),
+                nn.Linear(h_n,h_n),
+                
+                Swish(),
+                
+
+                nn.Linear(h_n,1),
+            )
+        #This function defines the forward rule of
+        #output respect to input.
+        def forward(self,x):
+            output = self.main(x)
+            return  output 
+
+    class Net2_psi(nn.Module):
+
+        #The __init__ function stack the layers of the 
+        #network Sequentially 
+        def __init__(self):
+            super(Net2_psi, self).__init__()
+            self.main = nn.Sequential(
+                nn.Linear(input_n,h_n),
+                
+                Swish(),
+                nn.Linear(h_n,h_n),
+               
+                Swish(),
+                nn.Linear(h_n,h_n),
+                
+                Swish(),
+                nn.Linear(h_n,h_n),
+                
+
+                Swish(),
+               
+                nn.Linear(h_n,1),
+            )
+        #This function defines the forward rule of
+        #output respect to input.
+        #def forward(self,x):
+        def forward(self,x):    
+            output = self.main(x)
+            return output             
+    
+    ################################################################
+    net2_T = Net2_T().to(device)
+    net2_psi = Net2_psi().to(device)
+
+
+    def init_normal(m):
+        if type(m) == nn.Linear:
+            nn.init.kaiming_normal_(m.weight)
+
+    # use the modules apply function to recursively apply the initialization
+    if (Flag_initialization):
+        net2_T.apply(init_normal)    
+        net2_psi.apply(init_normal)
+
+# Optimizer
+    optimizer_T = optim.Adam(net2_T.parameters(), lr=learning_rate, betas = (0.9,0.99),eps = 10**-15)
+    optimizer_psi = optim.Adam(net2_psi.parameters(), lr=learning_rate, betas = (0.9,0.99),eps = 10**-15)
+    ############################################################################
+    ############################################################
+    # PDE loss
+    def criterion_psi(x,y):
+
+
+        x.requires_grad = True
+        y.requires_grad = True
+       
+        net_in = torch.cat((x,y),1)
+        psi = net2_psi(net_in)
+        psi = psi.view(len(psi),-1)
+       
+        T = net2_T(net_in)
+        T = T.view(len(T),-1)
+
+      
+       
+        psi_x = torch.autograd.grad(psi,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
+        psi_xx = torch.autograd.grad(psi_x,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
+        psi_y = torch.autograd.grad(psi,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
+        psi_yy = torch.autograd.grad(psi_y,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
+    
+        T_x = torch.autograd.grad(T,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
+        T_xx = torch.autograd.grad(T_x,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
+        T_y = torch.autograd.grad(T,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
+        T_yy = torch.autograd.grad(T_y,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
+       
+
+        loss_1 = psi_xx + psi_yy - ra*z
+        loss_2 = T_xx +T_yy + psi_x
+
+
+        # MSE LOSS
+        loss_f = nn.MSELoss()
+
+        #Note our target is zero. It is residual so we use zeros_like
+        loss = loss_f(loss_1,torch.zeros_like(loss_1)) +  loss_f(loss_2,torch.zeros_like(loss_2))
+
+        return loss    
+    ############################################################
+ ###############################################################
+    def calculate_vel( psi,x, y):  #find velocity given psi
+        x.requires_grad = True
+        y.requires_grad = True
+        psi_x = torch.autograd.grad(psi,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
+        psi_y = torch.autograd.grad(psi,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
+        return psi_y, (-1*psi_x)
+
+    ###################################################################
+    # Boundary conditions loss
+    def Loss_BC(xb_in,yb_in,xb_out,yb_out,xb_up,yb_up,xb_down,yb_down,x,y):
+         
+       
+        xb_in.requires_grad = True
+        xb_out.requires_grad = True
+        yb_in.requires_grad = True
+        yb_out.requires_grad = True
+        xb_up.requires_grad = True
+        xb_down.requires_grad = True
+        yb_up.requires_grad = True
+        yb_down.requires_grad = True
+        
+        net_in_in = torch.cat((xb_in, yb_in), 1)
+        out_in = net2_psi(net_in_in)
+        out_in = out_in.view(len(out_in), -1)
+
+        net_in_out = torch.cat((xb_out, yb_out), 1)
+        out_out = net2_psi(net_in_out)
+        out_out = out_out.view(len(out_out), -1)
+
+        net_in_up = torch.cat((xb_up, yb_up), 1)
+        out_up = net2_psi(net_in_up)
+        out_up = out_up.view(len(out_up), -1)
+
+        net_in_down = torch.cat((xb_down, yb_down), 1)
+        out_down = net2_psi(net_in_down)
+        out_down = out_down.view(len(out_down), -1)
+        
+        out_in_T = net2_T(net_in_in)
+        out_in_T = out_in_T.view(len(out_in_T), -1)
+
+        out_out_T = net2_T(net_in_out)
+        out_out_T = out_out_T.view(len(out_out_T), -1)
+    
+        out_up_T = net2_T(net_in_up)
+        out_up_T = out_up_T.view(len(out_up_T), -1)
+
+        out_down_T = net2_T(net_in_down)
+        out_down_T = out_down_T.view(len(out_down_T), -1)
+
+        
+        T_x_in = torch.autograd.grad(out_in_T,xb_in,grad_outputs=torch.ones_like(xb_in),create_graph = True,only_inputs=True)[0]
+        T_x_out = torch.autograd.grad(out_out_T,xb_out,grad_outputs=torch.ones_like(xb_out),create_graph = True,only_inputs=True)[0]
+
+
+        loss_f = nn.MSELoss()
+        
+        loss_1 = loss_f(out_in,torch.zeros_like(out_in))+loss_f(out_out,torch.zeros_like(out_out))+loss_f(out_up,torch.zeros_like(out_up))+loss_f(out_down,torch.zeros_like(out_down))
+        loss_2 = loss_f(T_x_in,torch.zeros_like(T_x_in))+loss_f(T_x_out,torch.zeros_like(T_x_out))+loss_f(out_up_T,torch.zeros_like(out_up_T))+loss_f(out_down_T,torch.zeros_like(out_down_T))
+        return loss_1 + loss_2
+#######################################
+    # Main loop
+    tic = time.time()
+    # load low-fidelity results
+    if (Flag_pretrain):
+        print('Reading previous results')
+        net2_psi.load_state_dict(torch.load(path+"fwd_step_psi_prt_from_fenics_100"+".pt"))
+        net2_T.load_state_dict(torch.load(path+"fwd_step_T_prt_from_fenics_100"+".pt"))
+    
+    if (Flag_pretrain):
+        net2_psi.eval()
+        net2_T.eval()
+    
+    # INSTANTIATE STEP LEARNING SCHEDULER CLASS
+    if (Flag_schedule):
+        
+        scheduler_T = torch.optim.lr_scheduler.StepLR(optimizer_T, step_size=step_epoch, gamma=decay_rate)
+        scheduler_psi = torch.optim.lr_scheduler.StepLR(optimizer_psi, step_size=step_epoch, gamma=decay_rate)
+
+
+    if(Flag_batch):# This one uses dataloader
+            
+            for epoch in range(epochs):
+                loss_bc_n = 0
+                loss_eqn_n = 0
+                n = 0
+                for batch_idx, (x_in,y_in) in enumerate(dataloader):
+                    
+                    net2_psi.zero_grad()
+                    net2_T.zero_grad()
+                    loss_eqn = criterion_psi(x_in,y_in) 
+                    loss_bc = Loss_BC(xb_in,yb_in,xb_out,yb_out,xb_up,yb_up,xb_down,yb_down,x,y)
+                    loss = loss_eqn + Lambda_BC* loss_bc
+                    loss.backward()
+                   
+                    optimizer_psi.step()
+                    optimizer_T.step()
+                    
+                    loss_eqn_a =loss_eqn.detach().cpu().numpy()
+                    loss_eqn_n += loss_eqn_a
+                    loss_bc_a= loss_bc.detach().cpu().numpy()
+                    loss_bc_n += loss_bc_a 
+                    n += 1         
+                      
+                    if batch_idx % 40 ==0:
+                        print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.10f} Loss eqn {:.10f} Loss BC {:.6f}'.format(
+                            epoch, batch_idx * len(x_in), len(dataloader.dataset),
+                            100. * batch_idx / len(dataloader), loss.item(), loss_eqn.item(), loss_bc.item()))
+                    
+                if (Flag_schedule):
+                        
+                        scheduler_T.step()
+                        scheduler_psi.step()
+
+    
+    
+                mean_eqn = loss_eqn_n/n
+                mean_bc = loss_bc_n/n
+                print('***Total avg Loss : Loss eqn {:.10f} Loss BC {:.10f}'.format(mean_eqn, mean_bc) )
+                print('****Epoch:', epoch,'learning rate is: ', optimizer_psi.param_groups[0]['lr'])
+                
+                
+                if epoch % 1000 == 0:#save network
+                 
+                 torch.save(net2_psi.state_dict(),path+"fwd_psi_porous_media_with_rotation_HT_low_fidelity_initialization_"+str(epoch)+".pt")
+                 torch.save(net2_T.state_dict(),path+"fwd_T_porous_media_with_rotation_HT_low_fidelity_initialization_"+str(epoch)+".pt")
+                 
+    else:
+        for epoch in range(epochs):
+            
+            net2_psi.zero_grad()
+            net2_T.zero_grad()
+            loss_eqn = criterion_psi(x_in,y_in) 
+            loss_bc = Loss_BC(xb_in,yb_in,xb_out,yb_out,xb_up,yb_up,xb_down,yb_down,x,y)
+            if (Flag_BC_exact):
+                loss = loss_eqn 
+            else:
+                loss = loss_eqn + Lambda_BC * loss_bc
+            loss.backward()
+            
+            optimizer_psi.step() 
+            optimizer_T.step() 
+            if epoch % 1000 ==0:
+                print('Train Epoch: {} \tLoss: {:.10f} \t Loss BC {:.6f}'.format(
+                    epoch, loss.item(),loss_bc.item()))
+
+    toc = time.time()
+    elapseTime = toc - tic
+    print ("elapse time in parallel = ", elapseTime)
+    ###################
+    net2_psi.eval()
+    net2_T.eval()
+
+    net_in = torch.cat((x.requires_grad_(),y.requires_grad_()),1)
+    psi_out = net2_psi(net_in)
+    output_u ,output_v = calculate_vel(psi_out,x,y)
+    output_u = output_u.cpu().data.numpy() #need to convert to cpu before converting to numpy
+    output_v = output_v.cpu().data.numpy()
+    psi_out = psi_out.cpu().data.numpy()
+    output_T = net2_T(net_in)  #evaluate model
+    output_T = output_T.cpu().data.numpy()
+
+    
+    x = x.cpu()
+    y = y.cpu()
+
+    
+
+    return
+
+
+#######################################################
+#Main code:
+device = torch.device("cuda")
+
+Flag_batch = True #False #USe batch or not  
+Flag_BC_exact = False #If True enforces BC exactly
+Flag_pretrain = True   # False for random initialization
+Flag_initialization = False # True for random initialization
+Lambda_BC  = 20.0 #weigh bc loss
+
+
+batchsize = 256  #Total number of batches 
+
+epochs  = 10001 
+Flag_schedule = True #If true change the learning rate at 3 levels
+if (Flag_schedule):
+    learning_rate = 3e-4
+    step_epoch = 3000 #100
+    decay_rate = 0.1
+
+ra = 100
+z = 0.5
+
+nPt = 200  
+xStart = 0.
+xEnd = 1.
+yStart = 0.
+yEnd = 1.0
+
+#geometry
+
+
+x = np.linspace(xStart, xEnd, nPt)    
+y = np.linspace(yStart, yEnd, nPt)
+x, y = np.meshgrid(x, y)
+x = np.reshape(x, (np.size(x[:]),1))
+y = np.reshape(y, (np.size(y[:]),1))
+
+ 
+print('shape of x',x.shape)
+print('shape of y',y.shape)
+
+
+
+#boundary conditions
+nPt_BC = 2 *nPt
+xb_in = np.linspace(xStart, xStart, nPt_BC)
+yb_in = np.linspace(yStart, yEnd, nPt_BC)
+xb_out = np.linspace(xEnd, xEnd, nPt_BC)
+yb_out = np.linspace(yStart, yEnd, nPt_BC)
+xb_up = np.linspace(xStart, xEnd, nPt_BC)
+yb_up = np.linspace(yEnd, yEnd, nPt_BC)
+xb_down = np.linspace(xStart, xEnd, nPt_BC)
+yb_down = np.linspace(yStart, yStart, nPt_BC)
+
+
+xb_in= xb_in.reshape(-1, 1) #need to reshape to get 2D array
+yb_in= yb_in.reshape(-1, 1) #need to reshape to get 2D array
+xb_out= xb_out.reshape(-1, 1) #need to reshape to get 2D array
+yb_out= yb_out.reshape(-1, 1) #need to reshape to get 2D array
+xb_up= xb_up.reshape(-1, 1) #need to reshape to get 2D array
+yb_up= yb_up.reshape(-1, 1) #need to reshape to get 2D array
+xb_down= xb_down.reshape(-1, 1) #need to reshape to get 2D array
+yb_down= yb_down.reshape(-1, 1) #need to reshape to get 2D array
+
+print('shape of xb_in',xb_in.shape)
+print('shape of yb_in',yb_in.shape)
+print('shape of xb_out',xb_out.shape)
+print('shape of yb_out',yb_out.shape)
+print('shape of xb_up',xb_up.shape) 
+print('shape of yb_up',yb_up.shape)
+print('shape of xb_down',xb_down.shape)
+print('shape of yb_down',yb_down.shape)
+
+
+path = "Results/"
+
+
+geo_train(device,x,y,xb_in,yb_in,xb_out,yb_out,xb_up,yb_up,xb_down,yb_down,batchsize,learning_rate,epochs,path,Flag_batch,Flag_BC_exact,Lambda_BC,nPt )
+
+
+
+
+
+
+
+ 
+
+
+
+
