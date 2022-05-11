@@ -9,7 +9,7 @@ Pytorch codes are included for the different test cases presented in the paper. 
 Codes: 
 Codes for purely data driven and Multi-fidelity PINN are provided.
 Note: Same codes are used for Multi-fidelity and traditional PINN. Set Flag-initialization = True and Flag-pretrained = False for traditional PINNs.
-###################################################################################################
+####################################################################################################
 Data: 
 The input data for all test cases are provided in the Data folder. CSV files were genearted by Fluent or FeniCS and represent low fidelity CFD results. All .pt files are generated using a purely data driven deep neural network to map input coordinates to the low-fidelity CFD data. The .pt files were used to initialize PINN.
 ####################################################################################################
