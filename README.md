@@ -14,7 +14,7 @@ Pytorch codes are included for the different test cases presented in the paper. 
 ##########################################################<br/>
 Codes:<br/>
 Codes for purely data driven and Multi-fidelity PINN are provided.<br/>
-Note: Same codes are used for Multi-fidelity and traditional PINN. Set Flag-initialization = True and Flag-pretrained = False for traditional PINNs (current codes are for Multi-fidelity PINN where Flag-initialization = False and Flag-pretrained = True).
+Note: Same codes are used for Multi-fidelity and traditional PINN. Set Flag-initialization = True and Flag-pretrained = False for traditional PINN (current codes are for Multi-fidelity PINN where Flag-initialization = False and Flag-pretrained = True).
 
 ###########################################################<br/>
 Data: <br/>
